@@ -1,0 +1,121 @@
+seed_everything: 42
+
+model:
+  lrs_config:
+    initial: 1e-7
+    max: 5e-4
+    end: 1e-5
+    pct_start: 0.05
+    weight_decay: 1e-5
+    last_epoch: -1
+
+  model:
+    class_path: salt.models.SaltModel
+    init_args:
+      init_nets:
+        - input_name: tracks
+          dense_config:
+            output_size: &embed_dim 32
+            hidden_layers: [32]
+            activation: &activation ReLU
+
+      encoder:
+        class_path: salt.models.Transformer
+        init_args:
+          num_layers: 1
+          embed_dim: *embed_dim
+          out_dim: &out_dim 32
+          attn_type: flash-varlen
+          norm: LayerNorm
+          do_final_norm: True
+          dense_kwargs:
+            activation: *activation
+            gated: False
+          attn_kwargs:
+            num_heads: 4
+
+      pool_net:
+        class_path: salt.models.GlobalAttentionPooling
+        init_args:
+          input_size: *out_dim
+
+      tasks:
+        class_path: torch.nn.ModuleList
+        init_args:
+          modules:
+            - class_path: salt.models.ClassificationTask
+              init_args:
+                name: jets_classification
+                input_name: jets
+                label: flavour_label
+                class_names: [bjets, ujets]
+                use_class_dict: False
+                loss:
+                  class_path: torch.nn.CrossEntropyLoss
+                dense_config:
+                  input_size: *out_dim
+                  output_size: 2
+                  hidden_layers: [32, 16]
+                  activation: *activation
+
+data:
+  global_object: jets
+  variables:
+    jets:
+      - pt
+      - eta
+      - mass
+    tracks:
+      - pt_frac
+      - deta
+      - dphi
+      - dr
+      - d0
+      - d0_significance
+      - dz
+      - is_vertexing_input
+      - track_vertex_weight
+      - track_pv_weight
+      - assigned_vtx_z
+      - assigned_vtx_sigma_z
+      - assigned_vtx_sumpt2
+      - assigned_vtx_ntracks
+      - assigned_vtx_is_pv
+
+  train_file: /HEPData4ML/external_b_tagging/upp_output_da4d_ip/pp_output_train.h5
+  val_file: /HEPData4ML/external_b_tagging/upp_output_da4d_ip/pp_output_val.h5
+  test_file: /HEPData4ML/external_b_tagging/upp_output_da4d_ip/pp_output_test_delphes_da_z_only.h5
+  norm_dict: /HEPData4ML/external_b_tagging/upp_output_da4d_ip/norm_dict.yaml
+  class_dict: /HEPData4ML/external_b_tagging/upp_output_da4d_ip/class_dict.yaml
+
+  batch_size: 16
+  num_workers: 0
+  persistent_workers: False
+  # no prefetch_factor with num_workers=0
+  num_train: -1
+  num_val: -1
+  num_test: -1
+
+trainer:
+  max_epochs: 30
+  accelerator: auto
+  devices: 1
+  precision: 32-true
+  log_every_n_steps: 10
+  default_root_dir: /HEPData4ML/external_b_tagging/salt_runs/da4d_ip_reco_full
+  logger: false
+
+  callbacks:
+    - class_path: salt.callbacks.Checkpoint
+      init_args:
+        monitor_loss: val/jets_classification_loss
+
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: val/jets_classification_loss
+        mode: min
+        patience: 5
+        min_delta: 0.0005
+    - class_path: salt.callbacks.PredictionWriter
+    - class_path: lightning.pytorch.callbacks.TQDMProgressBar
+      init_args: { refresh_rate: 10 }
